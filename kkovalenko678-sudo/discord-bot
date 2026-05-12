@@ -1,0 +1,465 @@
+import discord
+from discord import app_commands
+import requests
+import csv
+from io import StringIO
+from datetime import datetime
+import os
+
+# ====== Токен ======
+TOKEN = "твой токен"
+if not TOKEN:
+    raise ValueError("❌ Укажи DISCORD_TOKEN!")
+
+# ====== Ссылки на Google Sheets ======
+CSV_GOS = "https://docs.google.com/spreadsheets/d/1VhSPzPa5Q2raeZ4Tlp8wbxdTPEhKjP6ZLdYgp91wzA4/export?format=csv&gid=0"
+CSV_OPG = "https://docs.google.com/spreadsheets/d/1VhSPzPa5Q2raeZ4Tlp8wbxdTPEhKjP6ZLdYgp91wzA4/export?format=csv&gid=2021514554"
+CSV_LIDERS = "https://docs.google.com/spreadsheets/d/1VhSPzPa5Q2raeZ4Tlp8wbxdTPEhKjP6ZLdYgp91wzA4/export?format=csv&gid=244947792"
+CSV_LEADERS_ACT = "https://docs.google.com/spreadsheets/d/1oTNUKuuRz3oBqJ0d_i-rfYviUmSMmrkv58PVrc2EQL8/export?format=csv&gid=717127754"
+CSV_CURATORS = "https://docs.google.com/spreadsheets/d/1oTNUKuuRz3oBqJ0d_i-rfYviUmSMmrkv58PVrc2EQL8/export?format=csv&gid=0"
+CSV_CURATORS_OPG = "https://docs.google.com/spreadsheets/d/1oTNUKuuRz3oBqJ0d_i-rfYviUmSMmrkv58PVrc2EQL8/export?format=csv&gid=438685093"
+CSV_HISTORY = "https://docs.google.com/spreadsheets/d/1vyxH8GgMY1Xeh2g4yUgnu5zSh4yPfMyiXf_-JLUfx4Y/export?format=csv"
+
+# ====== Инициализация бота ======
+intents = discord.Intents.default()
+bot = discord.Client(intents=intents)
+tree = app_commands.CommandTree(bot)
+
+# ====== Функции ======
+def load_rows(url):
+    res = requests.get(url)
+    res.encoding = "utf-8"
+    return list(csv.reader(StringIO(res.text)))
+
+def load_dict(url):
+    res = requests.get(url)
+    res.encoding = "utf-8"
+    return list(csv.DictReader(StringIO(res.text)))
+
+def normalize(text):
+    return text.lower().replace("_", "").replace(" ", "").strip()
+
+def get_transfers_safe(row):
+    if len(row) > 7 and row[7].strip():
+        return row[7]
+    return "0"
+
+def calc_time(start, end):
+    try:
+        d1 = datetime.strptime(start.strip(), "%d.%m.%Y")
+        d2 = datetime.strptime(end.strip(), "%d.%m.%Y")
+        delta = d2 - d1
+        days = delta.days
+        months = days // 30
+        years = months // 12
+        return f"{years} г. {months % 12} мес. {days % 30} дн."
+    except:
+        return "неизвестно"
+
+def get_status(end_date):
+    try:
+        end = datetime.strptime(end_date.strip(), "%d.%m.%Y")
+        now = datetime.now()
+        return "🟢 Активен" if end >= now else "🔴 Истёк"
+    except:
+        return "⚠️ Неизвестно"
+
+# =========================
+# 🔴 ЧС ГОС
+@tree.command(name="check_org")
+async def check_org(interaction: discord.Interaction, nickname: str):
+    rows = load_rows(CSV_GOS)
+    search = normalize(nickname)
+
+    found = []
+
+    # 🔎 поиск
+    for row in rows[1:]:
+        if search in normalize(row[0]):
+            found.append(row)
+
+    if not found:
+        await interaction.response.send_message("❌ Игрок не найден")
+        return
+
+    # 📤 вывод
+    for i, row in enumerate(found, start=1):
+        embed = discord.Embed(title=f"🔴 ЧС ГОС #{i}", color=0xED4245)
+
+        status = get_status(row[3])  # статус срока
+
+        embed.add_field(name="👤 Игрок", value=row[0], inline=False)
+
+        embed.add_field(
+            name="📅 Дата подачи — Дата выхода",
+            value=f"{row[2]} — {row[3]}",
+            inline=True
+        )
+
+        embed.add_field(
+            name="⏳ Срок",
+            value=f"{calc_time(row[2], row[3])}\n{status}",
+            inline=True
+        )
+
+        embed.add_field(name="📌 Причина", value=row[4], inline=False)
+        embed.add_field(name="🏛️ Фракция", value=row[5], inline=True)
+        embed.add_field(name="⚖️ Степень", value=row[6], inline=True)
+
+        if len(row) > 7 and row[7]:
+            embed.add_field(name="📎 Дополнительно", value=row[7], inline=False)
+
+        embed.set_footer(text="Проверка ЧС ГОС")
+
+        if i == 1:
+            await interaction.response.send_message(embed=embed)
+        else:
+            await interaction.followup.send(embed=embed)
+            return
+
+    await interaction.response.send_message("❌ Игрок не найден")
+
+# =========================
+# 🔵 ЧС ОПГ
+@tree.command(name="check_opg")
+async def check_opg(interaction: discord.Interaction, nickname: str):
+    rows = load_dict(CSV_OPG)
+    search = normalize(nickname)
+
+    found = []
+
+    for row in rows:
+        if search in normalize(row.get("Игровой ник / Номер аккаунта", "")):
+            found.append(row)
+
+    if not found:
+        await interaction.response.send_message("❌ Игрок не найден")
+        return
+
+    for i, row in enumerate(found, start=1):
+        start = row.get("Дата подачи", "-")
+        end = row.get("Дата выноса", "-")
+
+        embed = discord.Embed(title=f"🔵 ЧС ОПГ #{i}", color=0x5865F2)
+        embed.add_field(name="👤 Игрок", value=row.get("Игровой ник / Номер аккаунта", "-"), inline=False)
+        embed.add_field(name="📅 Дата подачи — Дата выхода", value=f"{start} — {end}", inline=True)
+        embed.add_field(name="⏳ Срок", value=calc_time(start, end), inline=True)
+        embed.add_field(name="📌 Причина", value=row.get("Причина", "-"), inline=False)
+        embed.add_field(name="👮 Кем занесен", value=row.get("Кем занесен", "-"), inline=False)
+
+        embed.set_footer(text="Проверка ЧС ОПГ")
+
+        if i == 1:
+            await interaction.response.send_message(embed=embed)
+        else:
+            await interaction.followup.send(embed=embed)
+            return
+
+    await interaction.response.send_message("❌ Игрок не найден")
+
+# =========================
+# 🟢 ДЕЙСТВУЮЩИЕ ЛИДЕРЫ
+@tree.command(name="check_leaders_act")
+async def check_leaders_act(interaction: discord.Interaction, query: str):
+    rows = load_rows(CSV_LEADERS_ACT)
+    q = normalize(query)
+
+    # ====== 🔥 ALL (ТАБЛИЦА ГОС + ОПГ) ======
+    if q == "all":
+        gos_list = []
+        opg_list = []
+
+        gos_factions = [
+            "Правительство",
+            "ФСБ",
+            "Полиция Южного",
+            "Полиция Арзамаса",
+            "МЗ Южного",
+            "МЗ Арзамаса",
+            "Воинская часть",
+            "Новостная сеть"
+        ]
+
+        for row in rows[3:]:
+            if not row[0].strip():
+                continue
+
+            name = row[0]
+            faction = row[1]
+            start = row[2]
+            end = row[4]
+            leave = row[3] if row[3] else "0"
+            discord_tag = row[5] if row[5] else "-"
+            transfers = get_transfers_safe(row)
+
+            line = (
+                f"👤 **{name}** | {faction}\n"
+                f"📅 {start} → {end}\n"
+                f"🏖️ Отгулы: {leave} | 💬 {discord_tag}\n"
+                f"🔄 Передачи: {transfers}\n"
+            )
+
+            if faction in gos_factions:
+                gos_list.append(line)
+            else:
+                opg_list.append(line)
+
+        embed = discord.Embed(
+            title="📊 Все действующие лидеры",
+            color=0x2ECC71
+        )
+
+        if gos_list:
+            embed.add_field(
+                name="🏛️ ГОС",
+                value="\n".join(gos_list[:10]),
+                inline=False
+            )
+
+        if opg_list:
+            embed.add_field(
+                name="🔫 ОПГ",
+                value="\n".join(opg_list[:10]),
+                inline=False
+            )
+
+        await interaction.response.send_message(embed=embed)
+        return
+
+    # ====== 🔹 ПОИСК ПО НИКУ ======
+    for row in rows[3:]:
+        if q in normalize(row[0]):
+            embed = discord.Embed(title="🟢 Действующий лидер ГОС/ОПГ", color=0x2ECC71)
+            embed.add_field(name="👤 Игрок", value=row[0], inline=False)
+            embed.add_field(name="🏛️ Фракция", value=row[1], inline=True)
+            embed.add_field(name="📅 Назначен", value=row[2], inline=True)
+            embed.add_field(name="🏖️ Отгулы", value=row[3], inline=True)
+            embed.add_field(name="📆 Конец срока", value=row[4], inline=True)
+            embed.add_field(name="💬 Discord", value=row[5], inline=True)
+            embed.add_field(name="🔄 Передачи", value=get_transfers_safe(row), inline=True)
+            await interaction.response.send_message(embed=embed)
+            return
+
+    # ====== 🔹 ПО ФРАКЦИИ ======
+    org_map = {
+        "мвд": ["Полиция Южного", "Полиция Арзамаса"],
+        "мз": ["МЗ Южного", "МЗ Арзамаса"],
+        "фсб": ["ФСБ"],
+        "правительство": ["Правительство"],
+        "вч": ["Воинская часть"],
+        "сми": ["Новостная сеть"]
+    }
+
+    if q in org_map:
+        first = True
+
+        for row in rows[3:]:
+            if row[1] in org_map[q]:
+                embed = discord.Embed(
+                    title=f"🟢 Действующий лидер {row[1]}",
+                    color=0x2ECC71
+                )
+
+                embed.add_field(name="👤 Игрок", value=row[0], inline=False)
+                embed.add_field(name="🏛️ Фракция", value=row[1], inline=True)
+                embed.add_field(name="📅 Назначен", value=row[2], inline=True)
+                embed.add_field(name="🏖️ Отгулы", value=row[3], inline=True)
+                embed.add_field(name="📆 Конец срока", value=row[4], inline=True)
+                embed.add_field(name="💬 Discord", value=row[5], inline=True)
+                embed.add_field(name="🔄 Передачи", value=get_transfers_safe(row), inline=True)
+
+                if first:
+                    await interaction.response.send_message(embed=embed)
+                    first = False
+                else:
+                    await interaction.followup.send(embed=embed)
+
+        return
+
+    await interaction.response.send_message("❌ Ничего не найдено")
+
+# =========================
+# 🔹 КУРАТОРЫ ГОС
+@tree.command(name="check_curator_org")
+async def check_curator_org(interaction: discord.Interaction, org: str):
+    rows = load_rows(CSV_CURATORS)
+    result = []
+
+    for row in rows[5:]:
+        for i, cell in enumerate(row):
+            if org.lower() in cell.lower() and i + 1 < len(row) and row[i + 1]:
+                result.append(f"• **{row[i + 1]}** — {cell}")
+
+    if not result:
+        await interaction.response.send_message("❌ Кураторы не найдены")
+        return
+
+    embed = discord.Embed(title=f"🟠 Кураторы {org.upper()}", color=0xFFA500)
+    embed.description = "\n".join(result)
+    embed.add_field(name="📊 Всего кураторов", value=f"**{len(result)}**", inline=False)
+    embed.set_footer(text="Проверка кураторов ГОС")
+
+    await interaction.response.send_message(embed=embed)
+
+# =========================
+# 🔹 КУРАТОРЫ ОПГ
+@tree.command(name="check_curator_opg")
+async def check_curator_opg(interaction: discord.Interaction, org: str):
+    mapping = {
+        "курганской": ("Курган", 0xF1C40F, "🟡"),
+        "ореховской": ("Орехов", 0x9B59B6, "🟣"),
+        "тамбовской": ("Тамбов", 0x2ECC71, "🟢"),
+        "кавказской": ("Кавказ", 0x3498DB, "🔵")
+    }
+
+    org_lower = org.lower()
+
+    if org_lower not in mapping:
+        await interaction.response.send_message(
+            "❌ Используйте: Курганской / Ореховской / Тамбовской / Кавказской"
+        )
+        return
+
+    keyword, color, emoji = mapping[org_lower]
+    rows = load_rows(CSV_CURATORS_OPG)
+    result = []
+
+    for row in rows:
+        for i, cell in enumerate(row):
+            if cell and keyword.lower() in cell.lower() and i + 1 < len(row) and row[i + 1]:
+                result.append(f"• **{row[i + 1]}** — {cell}")
+
+    if not result:
+        await interaction.response.send_message("❌ Кураторы не найдены")
+        return
+
+    embed = discord.Embed(title=f"{emoji} Кураторы {org.capitalize()} ОПГ", color=color)
+    embed.description = "\n".join(result)
+    embed.add_field(name="📊 Всего кураторов", value=f"**{len(result)}**", inline=False)
+    embed.set_footer(text="Проверка кураторов ОПГ")
+
+    await interaction.response.send_message(embed=embed)
+
+# =========================
+# 📜 ИСТОРИЯ ЛИДЕРОВ (с пагинацией)
+@tree.command(name="history_leaders")
+async def history_leaders(interaction: discord.Interaction, org: str):
+    rows = load_rows(CSV_HISTORY)
+
+    org_map = {
+        "правительство": 0,
+        "сми": 1,
+        "фсб": 2,
+        "мвд-а": 3,
+        "мвд-ю": 4,
+        "вч": 5,
+        "мз-а": 6,
+        "мз-ю": 7
+    }
+
+    org_lower = org.lower()
+
+    if org_lower not in org_map:
+        await interaction.response.send_message(
+            "❌ Используй: Правительство, СМИ, ФСБ, МВД-А, МВД-Ю, ВЧ, МЗ-А, МЗ-Ю"
+        )
+        return
+
+    col_index = org_map[org_lower]
+
+    # собираем список
+    result = []
+    for row in rows[1:]:
+        if len(row) > col_index and row[col_index].strip():
+            result.append(row[col_index])
+
+    if not result:
+        await interaction.response.send_message("❌ Нет данных")
+        return
+
+    # 🔥 РАЗБИВКА НА СТРАНИЦЫ (по 20 строк)
+    chunk_size = 45
+    chunks = [result[i:i + chunk_size] for i in range(0, len(result), chunk_size)]
+
+    first = True
+
+    for page_num, chunk in enumerate(chunks, start=1):
+        embed = discord.Embed(
+            title=f"📜 История лидеров — {org.upper()} (стр. {page_num}/{len(chunks)})",
+            color=0x5865F2
+        )
+
+        embed.description = "\n".join(chunk)
+
+        embed.add_field(
+            name="ℹ️ Информация",
+            value="Список лидеров может быть неточным из-за устаревших данных, ухода участников с канала либо смены ими никнеймов. В списке указан либо ник, либо Discord-тег.",
+            inline=False
+        )
+
+        if first:
+            await interaction.response.send_message(embed=embed)
+            first = False
+        else:
+            await interaction.followup.send(embed=embed)
+
+# =========================
+# 📘 ПОМОЩЬ
+@tree.command(name="help")
+async def help_command(interaction: discord.Interaction):
+    embed = discord.Embed(
+        title="📘 Команды бота",
+        description="Ниже список всех доступных команд:",
+        color=0x5865F2
+    )
+
+    embed.add_field(
+        name="🔍 Проверки ЧС",
+        value=(
+            "`/check_org nickname` — ЧС ГОС\n"
+            "`/check_opg nickname` — ЧС ОПГ\n"
+            "`/check_leaders nickname` — ЧС лидеров"
+        ),
+        inline=False
+    )
+
+    embed.add_field(
+        name="🟢 Лидеры",
+        value=(
+            "`/check_leaders_act query` — действующие лидеры\n"
+            "• ник → информация о лидере\n"
+            "• фракция (мвд, фсб и т.д.) → список\n"
+            "• `all` → все лидеры (ГОС + ОПГ)"
+        ),
+        inline=False
+    )
+
+    embed.add_field(
+        name="📜 История",
+        value=(
+            "`/history_leaders org` — история лидеров\n"
+            "Доступно: Правительство, СМИ, ФСБ, МВД-А, МВД-Ю, ВЧ, МЗ-А, МЗ-Ю"
+        ),
+        inline=False
+    )
+
+    embed.add_field(
+        name="🟠 Кураторы",
+        value=(
+            "`/check_curator_org org` — кураторы ГОС\n"
+            "`/check_curator_opg org` — кураторы ОПГ"
+        ),
+        inline=False
+    )
+
+    embed.set_footer(text="BotChecker • Используй команды через /")
+
+    await interaction.response.send_message(embed=embed)
+
+# =========================
+@bot.event
+async def on_ready():
+    await tree.sync()
+    print(f"✅ Бот онлайн: {bot.user}")
+
+bot.run(TOKEN)
